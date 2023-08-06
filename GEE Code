@@ -1,0 +1,2427 @@
+   //// Remote Sensing of Seagrass Cover Dynamics on Lighthouse Reef Atoll, Belize ///
+ ///  Written by John Gorelick ////
+ ///  Code chunks used from GEE text book and internet searches ///
+ ///  Some Algorithms and Functions used in this code were copied from the following chapter of 
+///  the GEE example book.  
+//  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//  Chapter:      A2.2 Benthic Habitats
+//  Checkpoint:   A22e
+//  Authors:      Dimitris Poursanidis, Aurélie C. Shapiro, Spyros Christofilakos
+//  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 
+ //{
+ //}
+ /////  Import all Datasets and polygons ////
+ // copy and paste, then imported into list above //
+ 
+Lagoon;
+var CoralLagoon = Lagoon;
+var CoralVect = ee.FeatureCollection(CoralVector);
+var CoralMask = CoralVect.reduceToImage(['zone'], ee.Reducer.sum()).eq(0).clip(LHRboxNew);
+// print(CoralVect);
+
+//Map.addLayer(CoralMask, {color:'red'}, 'coral');
+
+ ///// Get Landsat Image for May 2017 /////////////////////////////////////
+ 
+ 
+ /// 05/23/2017 //
+var  Landsat8pre = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20170523");
+Map.addLayer(Landsat8pre,{bands: ['SR_B4', 'SR_B3', 'SR_B2'], 
+                  min: 3000, max: 16000, gamma: 1},  "landsat 8 image");
+Map.centerObject(LHRpt, 12);
+
+
+
+/////// Individual L8 images ////////////
+var  Landsat8_2014 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20140718");
+var  Landsat8_2016 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20160402"); 
+var  Landsat8_2017 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20170405");
+var  Landsat8_2018 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20181220");
+var  Landsat8_202002 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20200225");
+var  Landsat8_202004 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20200413");
+var  Landsat8_2021 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20210502");
+var  Landsat8_2022 = ee.Image("LANDSAT/LC08/C02/T1_L2/LC08_018048_20221215");
+
+////////////////////////////////////////
+
+var LHRdepth = Depth;
+LHRdepth = LHRdepth.where(LHRdepth.gt(12),3);
+
+var projection = Landsat8pre.projection();
+LHRdepth = LHRdepth.reproject({crs: projection, scale: 30});
+LHRdepth = LHRdepth.rename('D');
+
+var LHRdepthsqrt = LHRdepth.sqrt().rename('D');
+  
+
+///////////////////////////////////////
+
+Landsat8pre = Landsat8pre.addBands(LHRdepth);
+
+///// Visulization parameters /////////////////////////////////////
+ 
+var LandVis = {bands: ['B4', 'B3', 'B2'],
+    min: -0.05, max: 0.3, gamma: 1};
+
+var visParams = {bands: ['B4', 'B3', 'B2'],
+    min: 0.3, max: 1.4, gamma: 1};
+
+var vivVisParams = {bands: ['B2B3'],
+    min: -0.5, max: 0.5, gamma: 0.75};
+    
+var depthVis = {bands: ['B4', 'B3', 'B2'],
+    min: -0.2, max: 0.5, gamma: 1};
+    
+var ClassVis = {
+    min: 1, max: 2,
+    palette: ['green','yellow']
+};
+
+ 
+////////////////// Correction Functions for Landsat Image //////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////////////
+
+
+/// Mask from polygon ///
+function polyMask(img) {
+  img = img.updateMask(CoralMask);
+  var mask = ee.Image.constant(1).clip(LHRboxNew).mask();
+  return img.updateMask(mask);
+}
+
+//// Renaming bands from SR_B2 etc to just B2 ///
+function ReNameBands(img){
+  img = img.select([1, 2, 3, 4])
+  .rename(['B2', 'B3', 'B4', 'B5']);
+  return img;
+}
+
+// Applies scaling factors.
+function applyScaleFactors(image) {
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+  return image.addBands(opticalBands, null, true)
+              .addBands(thermalBands, null, true);
+}
+
+//// Cloud Mask and Land Mask from ... ///
+
+function Cloudmask(image) {
+  var imagetmp = polyMask(image);
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var mask2 = image.mask().reduce(ee.Reducer.min());
+  image.updateMask(mask2).updateMask(qaMask);
+  image = ee.ImageCollection([image,imagetmp]).mosaic();
+  return image;
+
+}
+
+
+/// Sun Glint Removal from GEE book ///
+function sunglintRemoval(img) {
+    var linearFit1 = img.select(['B5', 'B2']).reduceRegion({
+        reducer: ee.Reducer.linearFit(),
+        geometry: sunglint,
+        scale: 30,
+        maxPixels: 1e12,
+        bestEffort: true,
+    });
+    var linearFit2 = img.select(['B5', 'B3']).reduceRegion({
+        reducer: ee.Reducer.linearFit(),
+        geometry: sunglint,
+        scale: 30,
+        maxPixels: 1e12,
+        bestEffort: true,
+    });
+    var linearFit3 = img.select(['B5', 'B4']).reduceRegion({
+        reducer: ee.Reducer.linearFit(),
+        geometry: sunglint,
+        scale: 30,
+        maxPixels: 1e12,
+        bestEffort: true,
+    });
+
+    var slopeImage = ee.Dictionary({
+        'B2': linearFit1.get('scale'),
+        'B3': linearFit2.get('scale'),
+        'B4': linearFit3.get('scale')
+    }).toImage();
+
+    var minNIR = img.select('B5').reduceRegion({
+        reducer: ee.Reducer.min(),
+        geometry: sunglint,
+        scale: 30,
+        maxPixels: 1e12,
+        bestEffort: true,
+    }).toImage(['B5']);
+
+    return img.select(['B2', 'B3', 'B4'])
+        .subtract(slopeImage.multiply((img.select('B5')).subtract(
+            minNIR)))
+        .addBands(img.select('B5'));
+}
+
+/////// DIV procedure from GEE book /////////
+function kernel(img) {
+    var boxcar = ee.Kernel.square({
+        radius: 1,
+        units: 'pixels',
+        normalize: true
+    });
+    return img.convolve(boxcar);
+}
+
+function makePositive(img) {
+    return img.where(img.lte(0), 0.0001);
+}
+
+function div(img1) { 
+  var img = makePositive(img1);
+   img = kernel(img);
+    var band1 = ee.List(['B2', 'B3', 'B4', 'B2', 'B3']);
+    var band2 = ee.List(['B4', 'B4', 'B3', 'B3', 'B2']);
+    var nband = ee.List(['B2B4', 'B3B4', 'B4B3', 'B2B3', 'B3B2']);
+
+    for (var i = 0; i < 5; i += 1) {
+        var x = band1.get(i);
+        var y = band2.get(i);
+        var z = nband.get(i);
+
+        var imageLog = img.select([x, y]).log();
+
+        var covariance = imageLog.toArray().reduceRegion({
+            reducer: ee.Reducer.covariance(),
+            geometry: Sandbottom,
+            scale: 30,
+            maxPixels: 1e12,
+            bestEffort: true,
+        });
+
+        var covarMatrix = ee.Array(covariance.get('array'));
+        var var1 = covarMatrix.get([0, 0]);
+        var var2 = covarMatrix.get([1, 1]);
+        var covar = covarMatrix.get([0, 1]);
+
+        var a = var1.subtract(var2).divide(covar.multiply(2));
+        var attenCoeffRatio = a.add(((a.pow(2)).add(1)).sqrt());
+
+        var depthInvariantIndex = img.expression(
+            'image1 - (image2 * coeff)', {
+                'image1': imageLog.select([x]),
+                'image2': imageLog.select([y]),
+                'coeff': attenCoeffRatio
+            });
+        var LHRdepthimg = Depth.rename('D');
+        img = ee.Image.cat([img, depthInvariantIndex.select([x], [z])]);
+    }
+    var imgfinal = ee.Image.cat([img1.select('B[2-4]'), img.select('B2B3')]);
+      return imgfinal.select('B[2-4]',  'B2B3').addBands(LHRdepthimg);
+}
+
+function depth(image) {
+  
+var red = image.select('B4').multiply(LHRdepthsqrt).multiply(1.2).rename('B4')
+var green = image.select('B3').multiply(LHRdepthsqrt).multiply(1).rename('B3')
+var blue = image.select('B2').multiply(LHRdepthsqrt).multiply(0.8).rename('B2')
+var depthimg = LHRdepth.addBands([blue, green, red]);
+return depthimg;
+}
+
+function change(img1, img2){
+ 
+  var changetmp = img1.subtract(img2).rename('Change');
+  
+  return changetmp;
+  }
+
+// Create a lookup table to make sourceHist match targetHist.
+var lookup = function(sourceHist, targetHist) {
+  // Split the histograms by column and normalize the counts.
+  var sourceValues = sourceHist.slice(1, 0, 1).project([0])
+  var sourceCounts = sourceHist.slice(1, 1, 2).project([0])
+  sourceCounts = sourceCounts.divide(sourceCounts.get([-1]))
+
+  var targetValues = targetHist.slice(1, 0, 1).project([0])
+  var targetCounts = targetHist.slice(1, 1, 2).project([0])
+  targetCounts = targetCounts.divide(targetCounts.get([-1]))
+
+  // Find first position in target where targetCount >= srcCount[i], for each i.
+  var lookup = sourceCounts.toList().map(function(n) {
+    var index = targetCounts.gte(n).argmax()
+    return targetValues.get(index)
+  })
+  return {x: sourceValues.toList(), y: lookup}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Make the histogram of sourceImg match targetImg.
+var histogramMatch = function(sourceImg, targetImg) {
+  var geom = LHRboxNew;
+  var args = {
+    reducer: ee.Reducer.autoHistogram({maxBuckets: 256, cumulative: true}), 
+    geometry: geom,
+    scale: 30, // Need to specify a scale, but it doesn't matter what it is because bestEffort is true.
+    maxPixels: 65536 * 4 - 1,
+    bestEffort: true
+  }
+  
+  // Only use pixels in target that have a value in source (inside the footprint and unmasked).
+  var source = sourceImg.reduceRegion(args)
+  var target = targetImg.reduceRegion(args)
+
+  return ee.Image.cat(
+    sourceImg.select(['B4']).interpolate(lookup(source.getArray('B4'), target.getArray('B4'))),
+    sourceImg.select(['B3']).interpolate(lookup(source.getArray('B3'), target.getArray('B3'))),
+    sourceImg.select(['B2']).interpolate(lookup(source.getArray('B2'), target.getArray('B2')))
+  )
+}
+
+
+ //////////////////////////////////////////////////////////////////
+ /// Dataset manipulations for classification //////////////////////////
+ //////////////////////////////////////////////////////////////
+
+var NEMOtmp = ee.FeatureCollection(
+    'projects/ee-gorejm13/assets/NEMOshpfile7')
+    .filterBounds(LHRboxNew)
+    .select(['Lat','Long','Class','High','Seagrass','Sand__pave']);
+
+var NEMOshp = NEMOtmp.map(function(feature){
+    var num = ee.Number.parse(feature.get('High'));
+    return feature.set('High', num);
+  });
+  
+NEMOshp = NEMOshp.filter(ee.Filter.gt('High',0));
+
+//////////////////////////////////////////////////////////
+/////////////// Random Points ///////////////////////
+/// Separate variables for each images validation points ///
+////  SeaGV_DATE
+////  SV_DATE
+
+// Validation Pts for 8 Landsat images  {
+var RandPts140718 = RandPtsAllImg.select(['Pres140718']);  
+
+var SeaGV14 = RandPts140718.filter(ee.Filter.eq('Pres140718', 1));
+SeaGV14 = SeaGV14.map(function(feature){ return feature.set('Pres', 1);   });
+SeaGV14 = SeaGV14.select(['Pres']);
+
+var SV14 = RandPts140718.filter(ee.Filter.eq('Pres140718', 2));
+SV14 = SV14.map(function(feature){  return feature.set('Pres', 2);   });
+SV14 = SV14.select(['Pres']);
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts160402 = RandPtsAllImg.select(['Pres160402']);
+
+var SeaGV16 = RandPts160402.filter(ee.Filter.eq('Pres160402', 1));
+SeaGV16 = SeaGV16.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV16 = SeaGV16.select(['Pres']);
+
+var SV16 = RandPts160402.filter(ee.Filter.eq('Pres160402', 2));
+SV16 = SV16.map(function(feature){  return feature.set('Pres', 2);   });
+SV16 = SV16.select(['Pres']);
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts170405 = RandPtsAllImg.select(['Pres170405']);
+
+var SeaGV17 = RandPts170405.filter(ee.Filter.eq('Pres170405', 1));
+SeaGV17 = SeaGV17.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV17 = SeaGV17.select(['Pres']);
+
+var SV17 = RandPts170405.filter(ee.Filter.eq('Pres170405', 2));
+SV17 = SV17.map(function(feature){  return feature.set('Pres', 2);   });
+SV17 = SV17.select(['Pres']);
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts181220 = RandPtsAllImg.select(['Pres181220']);
+
+var SeaGV18 = RandPts181220.filter(ee.Filter.eq('Pres181220', 1));
+SeaGV18 = SeaGV18.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV18 = SeaGV18.select(['Pres']);
+
+var SV18 = RandPts181220.filter(ee.Filter.eq('Pres181220', 2));
+SV18 = SV18.map(function(feature){  return feature.set('Pres', 2);   });
+SV18 = SV18.select(['Pres']);
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts200225 = RandPtsAllImg.select(['Pres200225']);
+
+var SeaGV2002 = RandPts200225.filter(ee.Filter.eq('Pres200225', 1));
+SeaGV2002 = SeaGV2002.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV2002 = SeaGV2002.select(['Pres']);
+
+var SV2002 = RandPts200225.filter(ee.Filter.eq('Pres200225', 2));
+SV2002 = SV2002.map(function(feature){  return feature.set('Pres', 2);   });
+SV2002 = SV2002.select(['Pres']);
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts200413 = RandPtsAllImg.select(['Pres200413']);
+
+var SeaGV2004 = RandPts200413.filter(ee.Filter.eq('Pres200413', 1));
+SeaGV2004 = SeaGV2004.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV2004 = SeaGV2004.select(['Pres']);
+
+var SV2004 = RandPts200413.filter(ee.Filter.eq('Pres200413', 2));
+SV2004 = SV2004.map(function(feature){  return feature.set('Pres', 2);   });
+SV2004 = SV2004.select(['Pres']);
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts210502 = RandPtsAllImg.select(['Pres210502']);
+
+var SeaGV21 = RandPts210502.filter(ee.Filter.eq('Pres210502', 1));
+SeaGV21 = SeaGV21.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV21 = SeaGV21.select(['Pres']);
+
+var SV21 = RandPts210502.filter(ee.Filter.eq('Pres210502', 2));
+SV21 = SV21.map(function(feature){  return feature.set('Pres', 2);   });
+SV21 = SV21.select(['Pres']);
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+var RandPts221215 = RandPtsAllImg.select(['Pres221215']);
+
+var SeaGV22 = RandPts221215.filter(ee.Filter.eq('Pres221215', 1));
+SeaGV22 = SeaGV22.map(function(feature){  return feature.set('Pres', 1);   });
+SeaGV22 = SeaGV22.select(['Pres']);
+
+var SV22 = RandPts221215.filter(ee.Filter.eq('Pres221215', 2));
+SV22 = SV22.map(function(feature){  return feature.set('Pres', 2);   });
+SV22 = SV22.select(['Pres']);
+
+///////////////////////////////////////////////////////////////////////////////////////////
+///}
+
+
+// ///{/////////////////////////////////////////////////////////////////////////
+
+var CoverPercent = 50;
+var SandPercent = 51;
+  
+//////////////////////////////////////////////////////////////////////////////  
+var Seagrassgt = NEMOshp.filter(ee.Filter.gte('Seagrass', CoverPercent));
+var Sandbottom = NEMOshp.filter(ee.Filter.gte('Sand__pave', SandPercent));
+
+Seagrassgt = Seagrassgt.map(function(feature){
+  return feature.set('Pres', 1);
+  });
+Seagrassgt = Seagrassgt
+
+Sandbottom = Sandbottom.map(function(feature){
+  return feature.set('Pres', 2);
+  });
+  
+Sandbottom = Sandbottom
+//}
+
+var SeaGT = Seagrassgt;
+var SeaGT5 = Seagrassgt;
+var SeaGV0517 = RandPts2.filter(ee.Filter.eq('Pres', 1)); 
+            
+
+var ST = Sandbottom;
+var ST5 = Sandbottom;
+var SV0517 = RandPts2.filter(ee.Filter.eq('Pres', 2)); 
+
+
+///// seagrass and sand cover percent ///////////////////////////////////////
+//{
+var CoverPercent6 = 60;
+var SandPercent6 = 50;
+
+var CoverPercent7 = 70;
+var SandPercent7 = 70;
+
+var CoverPercent8 = 80;
+var SandPercent8 = 80;
+
+var CoverPercent9 = 90;
+var SandPercent9 = 90;
+  
+//////////////////////////////////////////////////////////////////////////////  
+var Seagrassgt6 = NEMOshp.filter(ee.Filter.gte('Seagrass', CoverPercent6));
+var Sandbottom6 = NEMOshp.filter(ee.Filter.gte('Sand__pave', SandPercent6));
+
+Seagrassgt6 = Seagrassgt6.map(function(feature){
+   return feature.set('Pres', 1);
+  });
+
+Sandbottom6 = Sandbottom6.map(function(feature){
+  return feature.set('Pres', 2);
+  });
+  
+var SeaGT6 = Seagrassgt6;
+
+var ST6 = Sandbottom6;
+
+
+//////////////////////////////////////////////////////////////////////////////////
+var Seagrassgt7 = NEMOshp.filter(ee.Filter.gte('Seagrass', CoverPercent7));
+var Sandbottom7 = NEMOshp.filter(ee.Filter.gte('Sand__pave', SandPercent7));
+
+Seagrassgt7 = Seagrassgt7.map(function(feature){
+   return feature.set('Pres', 1);
+  });
+
+Sandbottom7 = Sandbottom7.map(function(feature){
+  return feature.set('Pres', 2);
+  });
+  
+var SeaGT7 = Seagrassgt7;
+
+var ST7 = Sandbottom7;
+
+
+//////////////////////////////////////////////////////////////////////////////////
+var Seagrassgt8 = NEMOshp.filter(ee.Filter.gte('Seagrass', CoverPercent8));
+var Sandbottom8 = NEMOshp.filter(ee.Filter.gte('Sand__pave', SandPercent8));
+
+Seagrassgt8 = Seagrassgt8.map(function(feature){
+   return feature.set('Pres', 1);
+  });
+
+Sandbottom8 = Sandbottom8.map(function(feature){
+  return feature.set('Pres', 2);
+  });
+  
+var SeaGT8 = Seagrassgt8;
+
+var ST8 = Sandbottom8;
+
+//////////////////////////////////////////////////////////////////////////////////
+var Seagrassgt9 = NEMOshp.filter(ee.Filter.gte('Seagrass', CoverPercent9));
+var Sandbottom9 = NEMOshp.filter(ee.Filter.gte('Sand__pave', SandPercent9));
+
+Seagrassgt9 = Seagrassgt9.map(function(feature){
+   return feature.set('Pres', 1);
+  });
+
+Sandbottom9 = Sandbottom9.map(function(feature){
+  return feature.set('Pres', 2);
+  });
+  
+var SeaGT9 = Seagrassgt9;
+
+var ST9 = Sandbottom9;
+
+///////////////////////////////////////////////////////////////////
+//}
+
+
+
+ //////////////////////////////////////////////////////////////
+ ///////////  Image correction procedure  //////////////////////////
+ ///////////////////////////////////////////////////////////////
+ 
+var tmpLandMask = LandMask.reduceToImage(['val'], ee.Reducer.sum()).eq(0); // Landmask
+
+function imagecorrection(img){
+var Landsat8img = img.clipToBoundsAndScale(LHRbigBox);
+var Cloudmaskedimg = Cloudmask(Landsat8img);
+var scaledimg = applyScaleFactors(Cloudmaskedimg)
+var maskedImg = ReNameBands(scaledimg);
+//var tmpLandMask = LandMask.reduceToImage(['val'], ee.Reducer.sum()).eq(0); // Landmask
+maskedImg = maskedImg.updateMask(tmpLandMask);
+var sgImg = sunglintRemoval(maskedImg);
+sgImg = polyMask(sgImg);
+var divImg = div(sgImg);
+return divImg
+}
+
+function imagecorrectionHIST(img){
+var Landsat8img = img.clipToBoundsAndScale(LHRbigBox);
+var Cloudmaskedimg = Cloudmask(Landsat8img);
+var scaledimg = applyScaleFactors(Cloudmaskedimg)
+var maskedImg = ReNameBands(scaledimg);
+//var tmpLandMask = LandMask.reduceToImage(['val'], ee.Reducer.sum()).eq(0); // Landmask
+maskedImg = maskedImg.updateMask(tmpLandMask);
+var sgImg = sunglintRemoval(maskedImg);
+sgImg = polyMask(sgImg);
+var depthimg = depth(sgImg);
+var histmatched = histogramMatch(depthimg, Landsat8d).addBands(depthimg.select(['D']));
+return histmatched;
+}
+
+function imagecorrectionDEPTH(img){
+var Landsat8img = img.clipToBoundsAndScale(LHRbigBox);
+var Cloudmaskedimg = Cloudmask(Landsat8img);
+var scaledimg = applyScaleFactors(Cloudmaskedimg)
+var maskedImg = ReNameBands(scaledimg);
+//var tmpLandMask = LandMask.reduceToImage(['val'], ee.Reducer.sum()).eq(0); // Landmask
+maskedImg = maskedImg.updateMask(tmpLandMask);
+var sgImg = sunglintRemoval(maskedImg);
+sgImg = polyMask(sgImg);
+var depthimg = depth(sgImg);
+return depthimg
+}
+
+//////////////////////////////////////////////////////
+
+var Landsat8d = imagecorrectionDEPTH(Landsat8pre); /// Landat8_year
+Map.addLayer(Landsat8d, depthVis, "depth image for Hist Ref")
+
+//var Landsat8 = imagecorrection(Landsat8pre); /// Landat8_year
+//Map.addLayer(Landsat8, LandVis, "corrected image")
+
+// figure products
+//{ var L8img = Landsat8_2022.clipToBoundsAndScale(LHRbigBox);
+// Map.addLayer(L8img,{}, '2022 pre')
+// var Cloudmaskedimg1 = Cloudmask(L8img);
+// var scaledimg1 = applyScaleFactors(Cloudmaskedimg1)
+// var maskedImg1 = ReNameBands(scaledimg1);
+// maskedImg1 = maskedImg1.updateMask(tmpLandMask);
+
+// Map.addLayer(maskedImg1,{}, '2022 landmask')
+// var sgImg1 = sunglintRemoval(maskedImg1);
+// sgImg1 = polyMask(sgImg1);
+// Map.addLayer(sgImg1,{}, 'snglint 22')
+// var depthimg1 = depth(sgImg1);
+// Map.addLayer(depthimg1,{}, 'depthboost 22')
+// var histmatched1 = histogramMatch(depthimg1, Landsat8d).addBands(depthimg1.select(['D']));
+// Map.addLayer(histmatched1,{}, '22 Hist')
+
+// var Landsat8depth = imagecorrectionDEPTH(Landsat8pre);
+// Map.addLayer(Landsat8depth, LandVis, "depth corrected image")}
+
+// var L14 = imagecorrectionDEPTH(Landsat8_2014);
+// var L14 = imagecorrection(Landsat8_2014);
+
+var L14 = imagecorrectionHIST(Landsat8_2014);
+var L16 = imagecorrectionHIST(Landsat8_2016);
+var L17 = imagecorrectionHIST(Landsat8_2017);
+var L18 = imagecorrectionHIST(Landsat8_2018);
+var L02 = imagecorrectionHIST(Landsat8_202002);
+var L04 = imagecorrectionHIST(Landsat8_202004);
+var L21 = imagecorrectionHIST(Landsat8_2021);
+var L22 = imagecorrectionHIST(Landsat8_2022);
+
+//{
+// Map.addLayer(L14,depthVis, 'L14')
+Map.addLayer(L16,depthVis, 'L16')
+// Map.addLayer(L17,depthVis, 'L17')
+// Map.addLayer(L18,depthVis, 'L18')
+// Map.addLayer(L02,depthVis, 'L02')
+// Map.addLayer(L04,depthVis, 'L04')
+// Map.addLayer(L21,depthVis, 'L21')
+// Map.addLayer(L22,depthVis, 'L22')
+//}
+
+
+/////////////////////////////////////
+ /// Classification procedure ///////////
+ ///////////////////////////////
+ 
+ 
+ var predictionBands = [
+    'B2', 
+  //  'B3', 
+ // 'B2B3',
+  //  'B4',
+  // 'D'
+  //'SR_B2', 'SR_B3', 'SR_B4'
+];
+
+print(predictionBands);
+
+var SeaGT = Seagrassgt6.randomColumn();
+//var SeaGV = SeaGV0517;
+
+var ST = Sandbottom6.randomColumn();
+//var SV = SV0517;
+
+var Percent = 0.3
+
+/////////////////////////////////////////////////////////
+// var RFclassified = img.select(predictionBands).classify(RFclassifier);
+
+// // function classify(img) {
+
+  /// parameters //
+  //var SeaGTraining = SeaGT.filter(ee.Filter.gte('random', Percent))//.aside(print, 'SG 60 training');
+  var SeaGTraining = SeaGT
+  var SeaGVali = SeaGV0517;
+  //var SeaGVali = SeaGT.filter(ee.Filter.lt('random', Percent))//.aside(print, 'SG val');
+  
+  //var STraining = ST.filter(ee.Filter.gte('random', Percent))//.aside(print, 'S training');
+  var STraining = ST
+  var SVali = SV0517;
+  //var SVali = ST.filter(ee.Filter.lt('random', Percent))//.aside(print, 'S Val');
+  
+  //////////////////////
+  
+    var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+        .flatten();
+    var training = Landsat8d.sampleRegions(mergedT, ['Pres'], 30).aside(print, 'classifier training');
+
+//     ////// RF  ////////////////////////////////////////
+    
+    // var RFclassifier1 = ee.Classifier.smileRandomForest(50).train({
+    // features: training,
+    // classProperty: 'Pres',
+    // inputProperties: predictionBands
+    // });
+    
+//     //   var RFclassifier = ee.Classifier.libsvm({
+//     //     kernelType: 'RBF',
+//     //     gamma: 1,
+//     //     cost: 500,
+//     // }).train(training, 'Pres', predictionBands);
+    
+    
+   // var RFclassified1 = Landsat8d.select(predictionBands).classify(RFclassifier1);
+    
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//   // print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy0517', accuracyOA);  print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd);  print('RF classifier explained', RFclassifier1.explain())
+
+//     //return RFclassified;
+// //}
+
+// Classification = RFclassified;
+// Map.addLayer(Classification, ClassVis, 'classification RF');
+
+
+//////////////////////////////////////////////////////
+
+   var RFclassifier = ee.Classifier.libsvm({
+        kernelType: 'RBF',
+        gamma: 1,
+        cost: 500,
+    }).train(training, 'Pres', predictionBands);
+    
+    
+    var RFclassified = Landsat8d.select(predictionBands).classify(RFclassifier);
+    
+    
+    var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+        .flatten();
+        
+        
+    var accuracyCol = RFclassified.unmask().reduceRegions({
+        collection: mergedV,
+        reducer: ee.Reducer.first(),
+        scale: 30
+    });
+    
+   // print(accuracyCol, 'classified points')
+    
+    // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+    // that value is compared to the "Pres" value to determine accuracy
+    
+    var classificationErrorMatrix = accuracyCol.errorMatrix({
+        actual: 'Pres',
+        predicted: 'first',
+        order: [1,2]
+    });
+    print(classificationErrorMatrix, 'error matrix');
+    ///         Predicted SG  Predicted Sand
+    /// True SG                              = Producer Acc
+    /// True Sand                            /////////////
+    ///           /////////// = Consumer Acc
+    
+    var classNames = ['Pred SG','Pred Sand'];
+    var accuracyOA = classificationErrorMatrix.accuracy();
+    var accuraccyCons = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.consumersAccuracy()
+            .toList()
+            .flatten()
+    });
+    
+    var accuracyProd = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.producersAccuracy()
+            .toList()
+            .flatten()
+    });
+
+    var classificationErrormatrixArray = classificationErrorMatrix
+        .array();
+
+    var arrayToDatatable = function(array) {
+        var classesNames = ee.List(classNames);
+
+        function toTableColumns(s) {
+            return {
+                id: s,
+                label: s,
+                type: 'number'
+            };
+        }
+        var columns = classesNames.map(toTableColumns);
+
+        function featureToTableRow(f) {
+            return {
+                c: ee.List(f).map(function(c) {
+                    return {
+                        v: c
+                    };
+                })
+            };
+        }
+        var rows = array.toList().map(featureToTableRow);
+        return ee.Dictionary({
+            cols: columns,
+            rows: rows
+        });
+    };
+
+    var dataTable = arrayToDatatable(classificationErrormatrixArray)
+        .evaluate(function(dataTable) {
+            print('------------- Error matrix -------------',
+                ui.Chart(dataTable, 'Table')
+                .setOptions({
+                    pageSize: 20
+                }),
+                'rows: reference, cols: mapped');
+        });
+    print('Overall Accuracy0517', accuracyOA);  print('Users accuracy', accuraccyCons);
+    print('Producers accuracy', accuracyProd);  //print('SVM classifier explained', RFclassifier.explain())
+
+Classification = RFclassified;
+//var Classification1 = RFclassified1;
+Map.addLayer(Classification, ClassVis, 'classification SVM');
+
+function classify(img) {
+
+  /// parameters //
+  var SeaGTraining = SeaGT;
+  var SeaGVali = SeaGV0517;
+  
+  var STraining = ST;
+  var SVali = SV0517;
+  //////////////////////
+  
+    // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+    //     .flatten();
+    // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+    //                   // .aside(print, 'classifier training');
+
+    // ////// RF  ////////////////////////////////////////
+    
+    // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+    // features: training,
+    // classProperty: 'Pres',
+    // inputProperties: predictionBands
+    // });
+    
+    var RFclassified = img.select(predictionBands).classify(RFclassifier);
+    
+    
+    var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+        .flatten();
+        
+        
+    var accuracyCol = RFclassified.unmask().reduceRegions({
+        collection: mergedV,
+        reducer: ee.Reducer.first(),
+        scale: 30
+    });
+    
+   // print(accuracyCol, 'classified points')
+    
+    // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+    // that value is compared to the "Pres" value to determine accuracy
+    
+    var classificationErrorMatrix = accuracyCol.errorMatrix({
+        actual: 'Pres',
+        predicted: 'first',
+        order: [1,2]
+    });
+   // print(classificationErrorMatrix, 'error matrix');
+    ///         Predicted SG  Predicted Sand
+    /// True SG                              = Producer Acc
+    /// True Sand                            /////////////
+    ///           /////////// = Consumer Acc
+    
+    var classNames = ['Pred SG','Pred Sand'];
+    var accuracyOA = classificationErrorMatrix.accuracy();
+    var accuraccyCons = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.consumersAccuracy()
+            .toList()
+            .flatten()
+    });
+    
+    var accuracyProd = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.producersAccuracy()
+            .toList()
+            .flatten()
+    });
+
+    var classificationErrormatrixArray = classificationErrorMatrix
+        .array();
+
+    var arrayToDatatable = function(array) {
+        var classesNames = ee.List(classNames);
+
+        function toTableColumns(s) {
+            return {
+                id: s,
+                label: s,
+                type: 'number'
+            };
+        }
+        var columns = classesNames.map(toTableColumns);
+
+        function featureToTableRow(f) {
+            return {
+                c: ee.List(f).map(function(c) {
+                    return {
+                        v: c
+                    };
+                })
+            };
+        }
+        var rows = array.toList().map(featureToTableRow);
+        return ee.Dictionary({
+            cols: columns,
+            rows: rows
+        });
+    };
+
+    var dataTable = arrayToDatatable(classificationErrormatrixArray)
+        .evaluate(function(dataTable) {
+            print('------------- Error matrix -------------',
+                ui.Chart(dataTable, 'Table')
+                .setOptions({
+                    pageSize: 20
+                }),
+                'rows: reference, cols: mapped');
+        });
+    print('Overall Accuracy', accuracyOA); // print('Users accuracy', accuraccyCons);
+    // print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+    return RFclassified;
+}
+
+function classify1(img, SeaGT, ST) {
+
+  SeaGT = SeaGT.randomColumn();
+  ST = ST.randomColumn();
+  
+/// parameters //
+  var SeaGTraining = SeaGT.filter(ee.Filter.gte('random', Percent)).aside(print, 'SG training');
+  var SeaGVali = SeaGT.filter(ee.Filter.lt('random', Percent)).aside(print, 'SG vali');
+  var STraining = ST.filter(ee.Filter.gte('random', Percent)).aside(print, 'ST training');
+  var SVali = ST.filter(ee.Filter.lt('random', Percent)).aside(print, 'ST vali');
+  
+  //////////////////////
+  
+    var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+        .flatten();
+    var training = img.sampleRegions(mergedT, ['Pres'], 30)
+                      // .aside(print, 'classifier training');
+
+    // ////// SVM ////////////////////////////////////////
+    
+    var RFclassifier = ee.Classifier.libsvm({
+        kernelType: 'RBF',
+        gamma: 1,
+        cost: 500,
+    }).train(training, 'Pres', predictionBands);
+    
+    
+    var RFclassified = img.select(predictionBands).classify(RFclassifier)
+                        
+    
+    
+    var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+        .flatten();
+        
+        
+    var accuracyCol = RFclassified.unmask().reduceRegions({
+        collection: mergedV,
+        reducer: ee.Reducer.first(),
+        scale: 30
+    });
+    
+   // print(accuracyCol, 'classified points')
+    
+    // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+    // that value is compared to the "Pres" value to determine accuracy
+    
+    var classificationErrorMatrix = accuracyCol.errorMatrix({
+        actual: 'Pres',
+        predicted: 'first',
+        order: [1,2]
+    });
+    print(classificationErrorMatrix, 'error matrix test');
+    ///         Predicted SG  Predicted Sand
+    /// True SG                              = Producer Acc
+    /// True Sand                            /////////////
+    ///           /////////// = Consumer Acc
+    
+    var classNames = ['Pred SG','Pred Sand'];
+    var accuracyOA = classificationErrorMatrix.accuracy();
+    var accuraccyCons = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.consumersAccuracy()
+            .toList()
+            .flatten()
+    });
+    
+    var accuracyProd = ee.Dictionary.fromLists({
+        keys: classNames,
+        values: classificationErrorMatrix.producersAccuracy()
+            .toList()
+            .flatten()
+    });
+
+    var classificationErrormatrixArray = classificationErrorMatrix
+        .array();
+
+    var arrayToDatatable = function(array) {
+        var classesNames = ee.List(classNames);
+
+        function toTableColumns(s) {
+            return {
+                id: s,
+                label: s,
+                type: 'number'
+            };
+        }
+        var columns = classesNames.map(toTableColumns);
+
+        function featureToTableRow(f) {
+            return {
+                c: ee.List(f).map(function(c) {
+                    return {
+                        v: c
+                    };
+                })
+            };
+        }
+        var rows = array.toList().map(featureToTableRow);
+        return ee.Dictionary({
+            cols: columns,
+            rows: rows
+        });
+    };
+
+    var dataTable = arrayToDatatable(classificationErrormatrixArray)
+        .evaluate(function(dataTable) {
+            print('------------- Error matrix -------------',
+                ui.Chart(dataTable, 'Table')
+                .setOptions({
+                    pageSize: 20
+                }),
+                'rows: reference, cols: mapped');
+        });
+        
+    print('Overall Accuracy', accuracyOA);  print('Users accuracy', accuraccyCons);
+    print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+    return RFclassified;
+}
+
+print("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+
+var Classification50 = classify1(Landsat8d, SeaGT5, ST5);
+var Classification60 = classify1(Landsat8d, SeaGT6, ST6);
+var Classification70 = classify1(Landsat8d, SeaGT7, ST7);
+var Classification80 = classify1(Landsat8d, SeaGT8, ST8);
+var Classification90 = classify1(Landsat8d, SeaGT9, ST9);
+
+
+////
+// //// Classification setup
+// ////{
+// function classify2(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT;
+//   var SeaGVali = SeaGV14;
+  
+//   var STraining = ST;
+//   var SVali = SV14;
+//   //////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                       //  .reproject({crs: projection, scale: 30});
+    
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//     print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy14', accuracyOA);  print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify3(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT;
+//   var SeaGVali = SeaGV16;
+  
+//   var STraining = ST;
+//   var SVali = SV16;
+//   //////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                         //.reproject({crs: projection, scale: 30});
+    
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//     print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy16', accuracyOA);  print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify4(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT;
+//   var SeaGVali = SeaGV17;
+  
+//   var STraining = ST;
+//   var SVali = SV17;
+//   //////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier);
+    
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//   print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy0417', accuracyOA);print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify5(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT;
+//   var SeaGVali = SeaGV18;
+  
+//   var STraining = ST;
+//   var SVali = SV18;
+//   //////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                       //  .reproject({crs: projection, scale: 30});
+    
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//     print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy18', accuracyOA); print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); // print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify6(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT6;
+//   var SeaGVali = SeaGV2002;
+  
+//   var STraining = ST6;
+//   var SVali = SV2002;
+  
+//   ///////////////////////////////////////////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                       // .reproject({crs: projection, scale: 30});
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   //  print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//   print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy20', accuracyOA); print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); //  print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify7(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT7;
+//   var SeaGVali = SeaGV2004;
+  
+//   var STraining = ST7;
+//   var SVali = SV2004;
+  
+//   ///////////////////////////////////////////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                         //.reproject({crs: projection, scale: 30});
+    
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   //  print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//     print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy201', accuracyOA);  print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); //  print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify8(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT8;
+//   var SeaGVali = SeaGV21;
+  
+//   var STraining = ST8;
+//   var SVali = SV21;
+  
+//   ///////////////////////////////////////////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                       // .reproject({crs: projection, scale: 30});
+                        
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//   //  print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//     print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//         .evaluate(function(dataTable) {
+//             print('------------- Error matrix -------------',
+//                 ui.Chart(dataTable, 'Table')
+//                 .setOptions({
+//                     pageSize: 20
+//                 }),
+//                 'rows: reference, cols: mapped');
+//         });
+//     print('Overall Accuracy21', accuracyOA); print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); //  print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+
+// function classify9(img) {
+
+//   /// parameters //
+//   var SeaGTraining = SeaGT;
+//   var SeaGVali = SeaGV22;
+  
+//   var STraining = ST;
+//   var SVali = SV22;
+  
+//   ///////////////////////////////////////////////////////////
+  
+//     // var mergedT = ee.FeatureCollection([SeaGTraining, STraining])
+//     //     .flatten();
+//     // var training = img.sampleRegions(mergedT, ['Pres'], 30)
+//     //                   // .aside(print, 'classifier training');
+
+//     // ////// RF  ////////////////////////////////////////
+    
+//     // var RFclassifier = ee.Classifier.smileRandomForest(50).train({
+//     // features: training,
+//     // classProperty: 'Pres',
+//     // inputProperties: predictionBands
+//     // });
+    
+//     var RFclassified = img.select(predictionBands).classify(RFclassifier)
+//                       // .reproject({crs: projection, scale: 30});
+                        
+//     var mergedV = ee.FeatureCollection([SeaGVali, SVali])
+//         .flatten();
+        
+        
+//     var accuracyCol = RFclassified.unmask().reduceRegions({
+//         collection: mergedV,
+//         reducer: ee.Reducer.first(),
+//         scale: 30
+//     });
+    
+//     // print(accuracyCol, 'classified points')
+    
+//     // "first" is the created column in 'accuracyCol' that shows the predicted value by the classifier
+//     // that value is compared to the "Pres" value to determine accuracy
+    
+//     var classificationErrorMatrix = accuracyCol.errorMatrix({
+//         actual: 'Pres',
+//         predicted: 'first',
+//         order: [1,2]
+//     });
+//   print(classificationErrorMatrix, 'error matrix');
+//     ///         Predicted SG  Predicted Sand
+//     /// True SG                              = Producer Acc
+//     /// True Sand                            /////////////
+//     ///           /////////// = Consumer Acc
+    
+//     var classNames = ['Pred SG','Pred Sand'];
+//     var accuracyOA = classificationErrorMatrix.accuracy();
+//     var accuraccyCons = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.consumersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+    
+//     var accuracyProd = ee.Dictionary.fromLists({
+//         keys: classNames,
+//         values: classificationErrorMatrix.producersAccuracy()
+//             .toList()
+//             .flatten()
+//     });
+
+//     var classificationErrormatrixArray = classificationErrorMatrix
+//         .array();
+
+//     var arrayToDatatable = function(array) {
+//         var classesNames = ee.List(classNames);
+
+//         function toTableColumns(s) {
+//             return {
+//                 id: s,
+//                 label: s,
+//                 type: 'number'
+//             };
+//         }
+//         var columns = classesNames.map(toTableColumns);
+
+//         function featureToTableRow(f) {
+//             return {
+//                 c: ee.List(f).map(function(c) {
+//                     return {
+//                         v: c
+//                     };
+//                 })
+//             };
+//         }
+//         var rows = array.toList().map(featureToTableRow);
+//         return ee.Dictionary({
+//             cols: columns,
+//             rows: rows
+//         });
+//     };
+
+//     // var dataTable = arrayToDatatable(classificationErrormatrixArray)
+//     //     .evaluate(function(dataTable) {
+//     //         print('------------- Error matrix -------------',
+//     //             ui.Chart(dataTable, 'Table')
+//     //             .setOptions({
+//     //                 pageSize: 20
+//     //             }),
+//     //             'rows: reference, cols: mapped');
+//     //     });
+//     print('Overall Accuracy22', accuracyOA); print('Users accuracy', accuraccyCons);
+//     print('Producers accuracy', accuracyProd); //  print('RF classifier explained', RFclassifier.explain())
+
+//     return RFclassified;
+// }
+// ///}
+///
+///////////////////////////////////////////////////////////////////////////
+///////// Run Classification /////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
+
+var Classification = RFclassified;
+//var Classification = classify(Landsat8d);
+//var Classification = classify1(Landsat8);
+// var Classification2 = classify2(L14);
+// var Classification3 = classify3(L16);
+// var Classification4 = classify4(L17);
+// var Classification5 = classify5(L18);
+// var Classification6 = classify6(L02);
+// var Classification7 = classify7(L04);
+// var Classification8 = classify8(L21);
+// var Classification9 = classify9(L22);
+
+var ClassVis = { 
+    min: 1, max: 2,
+    palette: ['green','yellow']
+};
+// print(Classification);
+ 
+Map.addLayer(Classification, ClassVis, 'classification');
+// // // Map.addLayer(Classification1, ClassVis, 'classification1');
+// Map.addLayer(Classification2, ClassVis, 'classification2');
+// Map.addLayer(Classification3, ClassVis, 'classification3');
+// Map.addLayer(Classification4, ClassVis, 'classification4');
+ //Map.addLayer(Classification5, ClassVis, 'classification5');
+// Map.addLayer(Classification6, ClassVis, 'classification6');
+// Map.addLayer(Classification7, ClassVis, 'classification7');
+// Map.addLayer(Classification8, ClassVis, 'classification8');
+// Map.addLayer(Classification9, ClassVis, 'classification9');
+ 
+
+
+////
+//// Change and Heat Maps
+////
+
+
+// ////{//////////////////////////////////////////////////////////////////
+
+// var x = change(Classification4, Classification);
+// var ClassVis1 = {
+//     bands:['Change'],
+//     min: -1, max: 1,
+//     palette: ['yellow','black', 'green']
+// };
+
+// Map.addLayer(x, ClassVis1, 'Change 0417 to 0517')
+
+// var x1a = change(Classification2, Classification3) // 14 to 16
+// var x1 = x1a.pow(2);
+// var x2a = change(Classification3, Classification4) // 16 10 17/04
+// var x2 = x2a.pow(2);
+//   var x2b = change(Classification3, Classification) // 16 10 17/05
+//   var x2bb = x2a.pow(2);
+// var x3a = change(Classification4, Classification) // 17/04 to 17/05
+// var x3 = x3a.pow(2);
+// var x4a = change(Classification, Classification5) // 17/05 to 18
+// var x4 = x4a.pow(2);
+// var x5a = change(Classification5, Classification6) // 18 to 20
+// var x5 = x5a.pow(2);
+//   var x5b = change(Classification5, Classification7) // 18 to 20/04
+//   var x5bb = x5a.pow(2);
+// var x6a = change(Classification6, Classification7) // 20/02 to 20/04
+// var x6 = x6a.pow(2);
+// var x7a = change(Classification7, Classification8) // 20/04 to 21
+// var x7 = x7a.pow(2);
+// var x8a = change(Classification8, Classification9) // 21 to 22
+// var x8 = x8a.pow(2);
+
+
+// Map.addLayer(x4a, ClassVis1, 'Change 17 to 18')
+
+// var hotmap = x1.add(x2).add(x3).add(x4).add(x5).add(x6).add(x7).add(x8);
+
+// var hotmapnew = x1
+//               //.add(x2)
+//               .add(x2bb)
+//               //.add(x3)
+//               .add(x4)
+//               //.add(x5)
+//               .add(x5bb)
+//               //.add(x6)
+//               .add(x7)
+//               .add(x8);
+              
+// var hotmask = hotmap.gt(0);
+// var coldmask = hotmap.eq(0);
+// var hotmap1 = hotmap.updateMask(hotmap.gt(3));
+
+// var nochangeclass = Classification.updateMask(coldmask);
+
+// var coldmap = hotmap.updateMask(coldmask);
+
+// var hotmask2 = hotmap.gt(3);
+// var hotmap2 = hotmap.updateMask(hotmask2);
+
+// var HeatVis = {min: 1, max: 8, 
+//   palette: ['blue','teal','green','yellow','orange','red','purple']};
+// var HeatVisNew = {min: 1, max: 6, 
+//   palette: ['blue','green','yellow','orange','red','purple']};
+
+// // Map.addLayer(coldmap,{},'no change');
+// // Map.addLayer(hotmap1, HeatVis, 'heatmap');
+// // Map.addLayer(hotmapnew.updateMask(hotmapnew.gt(3)), HeatVisNew, 'heatmap new');
+// // Map.addLayer(change(Classification, Classification9), ClassVis1, '17 to 22');
+
+
+// Map.addLayer(hotmap.updateMask(hotmap.gte(1)), HeatVis, 'heatmap1');
+// Map.addLayer(hotmap.updateMask(hotmap.gte(3)), HeatVis, 'heatmap3');
+// Map.addLayer(hotmap.updateMask(hotmap.gte(5)), HeatVis, 'heatmap5');
+// Map.addLayer(hotmap.updateMask(hotmap.gte(7)), HeatVis, 'heatmap7');
+// Map.addLayer(nochangeclass, {}, 'no change map w classes')
+
+
+// // print(Classification, 'Classification' )
+// // print(x, 'Change')
+// // print(x1, 'change squared');
+// //var Identity = hotmap.where(hotmap.mod(2).eq(1), )
+
+
+// function getarea(img) {
+//   var areaClassified = ee.Image.pixelArea().addBands(
+//       img);
+//   var areas = areaClassified.reduceRegion({
+//       reducer: ee.Reducer.sum().group({
+//       groupField: 1,
+//       groupName: 'Pres',
+//     }),
+//     geometry: img.geometry(),
+//     scale: 30,
+//     maxPixels: 1e10
+//     }); 
+ 
+//   var classAreas = ee.List(areas.get('groups'));
+
+//   var classAreaLists = classAreas.map(function(item) {
+//     var areaDict = ee.Dictionary(item);
+//     var classNumber = ee.Number(areaDict.get('Pres')).format();
+//     var area = ee.Number(areaDict.get('sum')).divide(30).round();
+//     return ee.List([classNumber, area]);
+//         })
+// return classAreaLists;
+// }
+
+// var changeimgs = ee.List([getarea(x1a),getarea(x2a),getarea(x3a),
+//               getarea(x4a),getarea(x5a),getarea(x6a),getarea(x7a),getarea(x8a)]);
+
+// var classimgs = ee.List([getarea(Classification2),getarea(Classification3),getarea(Classification4),
+//               getarea(Classification),getarea(Classification5),getarea(Classification6),
+//               getarea(Classification7),getarea(Classification8),getarea(Classification9)]);
+              
+// var dynamicArea = getarea(hotmap)
+// var dynamicAreanew = getarea(nochangeclass)
+// print(dynamicArea, 'hotmap areas')
+// print(dynamicAreanew, 'No change class areas')
+
+
+
+// //var classarea = ee.Dictionary(changeimgs);
+// print('Classified benthic areas', classimgs);
+
+// //var changearea = ee.Dictionary(classimgs);
+// print('Changing areas', changeimgs);
+
+// // var result = histogramMatch(highres, reference)
+
+// // var visParamsRefl = {min: 0, max: 0.25, bands:(['R','G','B'])}
+// // var visParamsDn = {min: 0, max: 255}
+// // Map.addLayer(reference, visParamsRefl, 'Reference')
+// // Map.addLayer(highres, visParamsRefl, 'highres')
+// // Map.addLayer(result, visParamsRefl, 'Matched')
+
+
+// //}//
+
+
+/////////// charts /////
+///{
+// var SG6 = Seagrassgt6.filter(ee.Filter.lte('Seagrass', CoverPercent9));
+
+// SG6 = SG6.map(function(feature){
+//   return feature.set('Pres', 1);
+//   });
+
+// Seagrassgt9 = Seagrassgt9.map(function(feature){
+//   return feature.set('Pres', 0);
+//   });
+
+// SeaGV0517 = SeaGV0517.map(function(feature){
+//   return feature.set('Pres', 3);
+//   });
+// SV0517 = SV0517.map(function(feature){
+//   return feature.set('Pres', 4);
+//   });
+  
+// ST = ST.map(function(feature){
+//   return feature.set('Pres', 2);
+//   });
+  
+
+// var Seagrasslt6 = NEMOshp.filter(ee.Filter.gte('Seagrass', 10));
+// Seagrasslt6 = Seagrasslt6.filter(ee.Filter.lte('Seagrass', 40)).map(function(feature){
+//   return feature.set('Pres', 5);
+//   });;
+
+// // Import the example feature collection.
+// var SGandS = ee.FeatureCollection([
+//         Seagrassgt9, 
+//         SG6, 
+//       // SeaGV0517, 
+//         //SV0517, 
+//         ST, 
+//       // Seagrasslt6])
+//         ]).flatten();
+
+
+// // Convert ecoregion feature collection to a classified image.
+// var regionsBand =
+//     SGandS
+//         .reduceToImage({properties: ['Pres'], reducer: ee.Reducer.first()})
+//         .rename('class');
+
+
+// // Reorder reflectance bands by ascending wavelength and
+// // add the classified ecoregions image as a band to the SR collection and
+// var Landsat8Class = Landsat8d.select(['B2','B3','B4']).addBands(regionsBand);
+
+// // Define a list of Landsat SR wavelengths for x-axis labels.
+// var wavelengths = [450, 530, 640]; // BGR
+
+// // Define the chart and print it to the console.
+// var chart = ui.Chart.image
+//                 .byClass({
+//                   image: Landsat8Class,
+//                   classBand: 'class',
+//                   region: SGandS,
+//                   reducer: ee.Reducer.mean(),
+//                   scale: 30,
+//                   classLabels: ['90', '60' ,'Sand'],
+//                   xLabels: wavelengths
+//                 })
+//                 .setChartType('LineChart')
+//                 .setOptions({
+//                   title: 'Benthic Spectral Signatures',
+//                   //intervals: {style: 'boxes', barWidth: 1, boxWidth: 1, lineWidth: 0},
+//                   hAxis: {
+//                     title: 'Wavelength (nm)',
+//                     titleTextStyle: {italic: false, bold: true},
+//                     viewWindow: {min: 400, max: 700}
+//                   },
+//                   vAxis: {
+//                     title: 'Reflectance (x1e4)',
+//                     titleTextStyle: {italic: false, bold: true}
+//                   },
+//                   colors: ['green','green','yellow'],
+//                   lineSize: 3
+                  
+//                 });
+// print(chart);
+
+
+// Map.addLayer(SeaGT, {
+//     color: 'green'
+// }, 'Seagrass rand points');
+
+// Map.addLayer(ST, {
+//     color: 'yellow'
+// }, 'Sand rand points');
+
+// ST = ST.map(function(feature){
+//   return feature.set('Pres', 1);
+//   });
+// Seagrassgt6 = Seagrassgt6.map(function(feature){
+//   return feature.set('Pres', 0);
+//   });
+
+// var SGandS = ee.FeatureCollection([Seagrassgt6]).flatten();
+// var SGandSa = ee.FeatureCollection([ST]).flatten();
+// var BOTH = ee.FeatureCollection([Seagrassgt6, ST]).flatten();
+
+// // Convert ecoregion feature collection to a classified image.
+// var regionsBand =
+//     BOTH
+//         .reduceToImage({properties: ['Pres'], reducer: ee.Reducer.first()})
+//         .rename('class');
+
+
+// // Reorder reflectance bands by ascending wavelength and
+// // add the classified ecoregions image as a band to the SR collection and
+// var Landsat8Class = Landsat8d.select(['B2','B3','B4']).addBands(regionsBand);
+// var landsat8dch = Landsat8d.select(['B2','B3'])
+
+// // Define the chart and print it to the console.
+// var chart =
+//     ui.Chart.image.histogram({image: Landsat8d.select(['B2']), region: SGandS, scale: 30,
+//                           minBucketWidth:0.01})
+//         .setSeriesNames(['Blue'])
+//         .setOptions({
+//           title: 'Depth Corrected Seagrass Reflectance Histogram',
+//           hAxis: {
+//             title: 'Reflectance',
+//             titleTextStyle: {italic: false, bold: true},
+//             viewWindow: {min: -0.1, max: 0.5}
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true},
+//               viewWindow: {min: 0, max: 20} },
+//           colors: ['blue']
+//         });
+// print(chart);
+
+// var chart =
+//     ui.Chart.image.histogram({image: Landsat8.select(['B2']), region: SGandS, scale: 30, 
+//                           minBucketWidth:0.01})
+//         .setSeriesNames(['B3'])
+//         .setOptions({
+//           title: 'Depth Corrected Seagrass Reflectance Histogram',
+//           hAxis: {
+//             title: 'Reflectance',
+//             titleTextStyle: {italic: false, bold: true},
+//             viewWindow: {min: -0.1, max: 0.5}
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true},
+//               viewWindow: {min: 0, max: 20} },
+//           colors: ['green']
+//         });
+// print(chart);
+
+// // Define the chart and print it to the console.
+// var chart =
+//     ui.Chart.image.histogram({image: Landsat8d.select(['B2']), region: SGandSa, scale: 30, 
+//                               minBucketWidth:0.01})
+//         .setSeriesNames(['Sand'])
+//         .setOptions({
+//           title: 'Depth Corrected Sand Reflectance Histogram',
+//           hAxis: {
+//             title: 'Reflectance (x1e4)',
+//             titleTextStyle: {italic: false, bold: true},
+//             viewWindow: {min: -0.1, max: 0.5} 
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true},
+//               viewWindow: {min: 0, max: 20} },
+//           colors: ['blue']
+//         });
+// print(chart);
+
+// var chart =
+//     ui.Chart.image.histogram({image: Landsat8.select(['B2']), region: SGandSa, scale: 30, 
+//                               minBucketWidth:0.01})
+//         .setSeriesNames(['Sand'])
+//         .setOptions({
+//           title: 'Depth Corrected Sand Reflectance Histogram',
+//           hAxis: {
+//             title: 'Reflectance (x1e4)',
+//             titleTextStyle: {italic: false, bold: true},
+//             viewWindow: {min: -0.1, max: 0.5} 
+//           },
+//           vAxis:
+//               {title: 'Count', titleTextStyle: {italic: false, bold: true},
+//               viewWindow: {min: 0, max: 20} },
+//           colors: ['green']
+//         });
+// print(chart);
+///}
+//////////////
+
+//////////////// exporting image data /////////////////////////////////// 
+// var ClassCol = ee.ImageCollection([Classification,Classification1, Classification2,Classification3,Classification4,
+//                                   Classification5,Classification6,Classification7,Classification8,Classification9,
+//                                   x1a,x2a,x3a,x4a,x5a,x6a,x7a,x8a,hotmap]);
+
+// var batch = require('users/fitoprincipe/geetools:batch')
+
+// var DescCollection = ClassCol;
+
+// batch.Download.ImageCollection.toDrive(DescCollection, 'GEE_Maps_Folder', 
+//                 {scale: 30, 
+//                 region: LHRboxNew, 
+//                 type: 'float'})
+// Export.image.toDrive({
+//   image: nochangeclass,
+//   description: 'No Change Classes img',
+//   folder: 'GEE_Maps_Folder',
+//   region: LHRboxNew,
+//   scale: 30,
+//   maxPixels: 1e13
+// });
