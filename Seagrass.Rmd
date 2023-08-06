@@ -1,0 +1,123 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+STHDA
+
+```{r}
+library(ggplot2)
+SG <- read.csv("Seagrass.csv")
+
+Heat <- read.csv("Heatmap.csv")
+
+Grow <- read.csv("Growth.csv")
+
+```
+
+
+```{r}
+lm = lm(Seagrass~DAY, data = SG)
+summary(lm)
+
+coeff=coefficients(lm)
+# Equation of the line : 
+eq = paste0("y = (", round(coeff[2],6)*1000, "*10^4) * x + ", round(coeff[1],1))
+# Plot
+
+plot1 <- ggplot(SG) +  ylim(93,100) + theme_classic() +
+  geom_abline(intercept = coeff[1], slope = coeff[2], color="green", size=1) +
+  geom_point(aes(x = DAY, y =Seagrass, color = "green" ))
+
+plot1 +  xlab("Satellite image date") + ylab("Seagrass coverage km^2") 
+
+plot <- ggplot(SG) 
+
+plot + geom_abline(intercept = coeff[1], slope = coeff[2], color="green", size=2) +
+  geom_point(aes(x = DAY, y =Seagrass), color = "dark green", size = 3 ) +
+  
+  xlab("Date in days") + ylab("Seagrass coverage km^2") + 
+  scale_x_continuous(name = "Satellite Image Date", 
+                   breaks = c(1,614,1029,1592,2065,2444,3027) , 
+                   labels= c("7/2014","4/2016","5/2017","12/2018", "4/2020","5/2021","12/2022"), 
+                   limits = c(0,3500)) +
+  scale_y_continuous(breaks = c(90, 92.5, 95, 97.5, 100), labels = c("90","92.5","95","97.5","100"), limits = c(90,100)) + theme_classic() +
+  theme(legend.position = "none")
+```
+
+
+```{r}
+
+lm = lm(Seagrass~DAY, data = SG)
+summary(lm)
+
+coeff=coefficients(lm)
+# Equation of the line : 
+eq = paste0("y = (", round(coeff[2],6)*1000, "*10^4) * x + ", round(coeff[1],1))
+# Plot
+
+plot1 <- ggplot(SG) +  ylim(93,100) + theme_classic() +
+  geom_abline(intercept = coeff[1], slope = coeff[2], color="green", size=1) +
+  geom_point(aes(x = DAY, y =Seagrass, color = "green" ))
+
+plot1 +  xlab("Satellite image date") + ylab("Seagrass coverage km^2") 
+
+plot <- ggplot(SG) 
+
+plot + geom_abline(intercept = coeff[1], slope = coeff[2], color="green", size=2) +
+    geom_abline(intercept = 97.438, slope  = -0.0142, color="red", 
+                 linetype="dashed", size=1) +
+   geom_abline(intercept = 97.438, slope = -0.0038, color="orange", 
+                 linetype="dashed", size=1) +
+  geom_abline(intercept = 97.438, slope = -0.0005, color="blue", 
+                 linetype="dashed", size=0.8) +
+  geom_point(aes(x = DAY, y =Seagrass), color = "dark green", size = 3 ) +
+  
+  xlab("Date in days") + ylab("Seagrass coverage km^2") + 
+  scale_x_continuous(name = "Satetllite Image Date", 
+                   breaks = c(1,614,1029,1592,2065,2444,3027) , 
+                   labels= c("7/2014","4/2016","5/2017","12/2018", "4/2020","5/2021","12/2022"), 
+                   limits = c(0,3500)) +
+  scale_y_continuous(breaks = c(90, 92.5, 95, 97.5, 100), labels = c("90","92.5","95","97.5","100"), limits = c(90,100)) + theme_classic() +
+  theme(legend.position = "none")
+
+coeff[2]
+
+
+```
+```{r}
+glm = glm(Seagrass~DAY, data = SG, family = "gaussian")
+summary(glm)
+```
+```{r}
+plot <- ggplot(Grow, aes(fill = TYPE, x=SAT, y= GROW)) + 
+  geom_bar(position = "dodge", stat = "identity", width = 0.5, color = "black")  +
+  ylab("Seagrass Change km^2") +
+  scale_fill_manual(values = c("darkgreen","yellow"), labels=c('Growth', 'Loss')) + 
+  scale_x_continuous(name = "Satetllite Image Date", 
+          breaks=c(2,3,4,5,6,7,8,9),
+          labels=c("4/2016","4/2017","5/2017","12/2018","2/2020","4/2020","5/2021","12/2022"),
+          limits = c(1.5,9.5)) +
+  theme_classic() + theme(legend.title = element_blank()) +
+    theme(legend.position = c(0.7, 0.9),
+    legend.background = element_rect(size=0.3, linetype="solid", color = "black"))
+
+ plot      
+
+```
+
+
+
+```{r}
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
